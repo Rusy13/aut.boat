@@ -1,0 +1,488 @@
+//#include "I2Cdev.h"
+#include <HMC5883L.h>
+#include <Average.h>
+#include <SoftwareSerial.h>
+#include <PWMServo.h>
+#include <Wire.h>
+#include "TinyGPS++.h"
+
+#define radius 6371008.8
+
+
+////////////////ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД
+//int setpoint = 0;   // заданная величина, которую должен поддерживать регулятор
+//int input = 0;      // сигнал с датчика (например температура, которую мы регулируем)
+int output = 0;     // выход с регулятора на управляющее устройство (например величина ШИМ или угол поворота серво)
+int pidMin = -90;     // минимальный выход с регулятора
+int pidMax = 90;   // максимальный выход с регулятора
+// коэффициенты
+float Kp = 1.25;    //1.5;  //1.0        похоже:1.2              1.6        1.4      1.4       1.0
+float Ki = 0.005;    //0.1;  //0.0               0.1              0.3       0.17     0.15      0.05
+float Kd = 0.125;//0.125    //0.3;  //0.0          0.05 или 0.06         0.1        0.55     0.4      0.25
+float _dt_s = 0.1; // время итерации в секундах
+// вспомогательные переменные
+int prevInput = 0;
+float integral = 0.0;
+//////////////////ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД ПИД 
+
+HMC5883L mag;
+//объекты серво
+PWMServo myservo;
+
+//объявление постоянных констант
+static const int RXPin = 4, TXPin = 5;            //пины для serial gps
+static const unsigned long GPSBaud = 9600;          //baudrate для gps
+static const unsigned long COMBaud = 9600;          //baudrate для com
+unsigned long otherTime;
+//объявление константных переменных финальной точки
+float fin_lat = 0;  //финальные координаты LAT
+float fin_lon = 0; //финальные координаты LON
+int prevangle = 0;
+int pryamo = 90;
+//переменные
+int rudderspeed = 10;
+double lat, lon;          //текущие lat, lon
+float course, bearing,bearingx;   //курс, азимут
+float alt, speed;         //высота, скорость
+float heading = 0;
+int angle;
+int er_com = 10;    //переменная погрешность при сравнивании углов
+int servoPos = 85;//текущая позиция сервы
+//vector_length_stabilasation() - is the function of the magnetometer vector length stabilasation (stabilisation of the sphere radius)
+float scaler;
+boolean scaler_flag = false;
+float normal_vector_length;
+int16_t mx, my, mz;
+float xv, yv, zv;
+float calibrated_values[3]; 
+int intheading;
+int intbearing;
+int error,error1;
+float headingx;
+//объекты
+TinyGPSPlus gps;                          //новый объект для GPS
+SoftwareSerial gpsSerial(RXPin, TXPin);     //программное сериал соединение для GPS
+
+
+
+//ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2
+double p_gain = -0.75;
+double dd_gain = -20;
+double d_gain = 0.75;
+bool rudder_engaged = false;
+int sat_count = 0;
+float rudder_control = 0;
+float rudder_position = 0;
+long last_manual_message = 0;
+long last_error_calculation = 0;
+float dd_error = 0;
+float cross_track_error = 0;
+float direction_error = 0;
+//ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 ПЕРЕМЕННЫЕ2 
+
+
+
+
+float Kp1 = 31.000;               //-------------50.000 ---------------31.000
+float Ki1 = 2.000;                //-------------4.000-----------------2.000
+float Kd1 = 5.000;               //-------------11.000----------------5.000
+float _dt_s1 = 0.01;
+float lastTargetlat = 0;
+float lastTargetlon = 0;
+float lastCourse = 0;
+float snos = 0;
+float angle0 = 0;
+float deviation1 = 0;
+float delta_input1 = 0;
+float prevInput1 = 0;
+float output1 = 0;
+float integral1 = 0;
+
+
+//float finlat [4] = {60.1772630,60.1771328,60.1771983,60.1773299};
+//float finlon [4] = {30.3269618,30.3272049,30.3273736,30.3271456};
+
+float finlat [4] = {25.1772630,72.1771328,60.1771983,53.1773299};
+float finlon [4] = {47.3269618,59.3272049,62.3273736,78.3271456};
+
+//float finlat [4]
+//float finlon [4]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void setup()
+{
+
+  Serial.println("Initializing I2C devices...");
+  mag.initialize();
+  Serial.begin(9600);
+  Wire.begin();
+  
+  Serial.begin(COMBaud);      //открываем serial с компьютером
+  gpsSerial.begin(GPSBaud);     //serial для GPS  
+  
+  //объекты серв
+  myservo.attach(9);
+ 
+  
+  //полет по прямой до получения координат GPS
+  myservo.write(90);  
+  
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.println("START");
+  //отсылаем финальные координаты
+ // Serial.print("F_LAT=");  Serial.print(fin_lat, 6); Serial.print(" ");
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.print("F_LON="); Serial.print(fin_lon, 6); Serial.print(" ");
+  //Serial.print("sssssssssssssssssssssssssssssssssss_LAT=");  Serial.print(gps.location.lat(),6); Serial.println(" ");
+  //Serial.print("ssssssssssssssssssssssssssssssssssssss_LON="); Serial.print(gps.location.lng(),6); Serial.println(" ");
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.println();
+  //Serial.println("error,prevangle");
+ 
+
+//  Serial.setTimeout(100000);
+
+
+  
+//for (int i=0; i<4; i++){
+  // Serial.println("введите широту");
+  // finlat [i] = Serial.read();
+  // Serial.println("введите долготу");
+  // finlon [i] = Serial.read();
+//}
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void loop()
+{
+
+    
+  unsigned long start = millis();
+  if (gpsSerial.available() > 0){
+  if (gps.encode(gpsSerial.read())){
+
+    for (int i = 0; i < 4; i++){
+    
+    fin_lat = finlat [i];
+    fin_lon = finlon [i];
+    //Serial.println(fin_lat,7);
+    //Serial.println(fin_lon,7);
+    Serial.print("fin_lon==");
+    Serial.println(fin_lon,7);
+    Serial.print("fin_lat==");
+    Serial.println(fin_lat,7);
+
+    while ((gps.location.lat()!=fin_lat) and (gps.location.lng()!=fin_lon)){
+
+    //bearingx = get_gps_info(fin_lat,fin_lon);                   //получение данных GPS и считывание azimuth (bearing) 
+    bearingx = gps.courseTo(gps.location.lat(),gps.location.lng(),fin_lat, fin_lon);
+    Serial.print("bearing");
+    Serial.println(bearingx);
+    //Serial.print(" ");
+    headingx = heading_s();                                    //считывание heading
+    Serial.print("heading");
+    Serial.println(headingx);
+
+    snos = Snos();
+    Serial.print("snos");
+    Serial.println(snos);
+    error = ER();
+    Serial.print("error");
+    Serial.println(error);
+    prevangle = computePID();
+
+
+    angle0 = (prevangle + snos); //////////////////////////////* 10
+    if (angle0 < 90)//-lim 
+    angle0 = -90;          //-lim 
+    if (angle0 > 90)//lim
+    angle0 = 90;         //lim  
+
+
+    
+    Serial.print("error== ");
+    Serial.println(error);
+    //Serial.print(" ");
+    Serial.print("prevengle== ");
+    Serial.println(prevangle);
+    RudderAngle();
+    }}}}}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//функция получения данных по GPS
+/*float get_gps_info(float a, float b)
+{
+  lat = gps.location.lat();         //определение LAT
+  lon = gps.location.lng();         //определение LON
+  alt = gps.altitude.meters();       //высота
+  speed = gps.speed.kmph();          //скорость
+  course = gps.course.deg();               //курс
+
+  unsigned long date = gps.date.value();   //дата
+  unsigned long time = gps.time.value();   //время
+
+  bearing = gps.courseTo(gps.location.lat(),gps.location.lng(),fin_lat, fin_lon);
+
+}*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+float heading_s(){
+    mag.getHeading(&mx, &my, &mz);
+  
+  float values_from_magnetometer[3];
+  
+  xv = (float)mx;
+  yv = (float)my;
+  zv = (float)mz;
+  values_from_magnetometer[0] = xv;
+  values_from_magnetometer[1] = yv;
+  values_from_magnetometer[2] = zv;
+  transformation(values_from_magnetometer);
+  
+  vector_length_stabilasation();
+
+float heading = atan2(calibrated_values[1], calibrated_values[0]);
+    if(heading < 0)
+      heading += 2 * PI;
+      
+    if(heading > 2 * PI)
+      heading -= 2 * PI;
+  
+  delay(100); 
+  return (heading * 180/M_PI);
+
+   }
+
+
+
+
+
+
+
+
+
+   
+
+   int ER(){
+  intheading = (int)headingx; ////////% 360;
+  intbearing = (int)bearingx; //////////% 360;
+ /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Serial.print("intheading___");
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.println(intheading);
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.print("intbearing___");
+ /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Serial.println(intbearing);
+  int error1 = (intbearing - intheading);
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.print("error1 = "); Serial.println(error1);
+  return error1;
+  
+    }
+
+
+
+
+
+
+ void RudderAngle()    {              /////////////static int RudderAngle()    {  /////////////(float bearing, float heading){
+  
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.print("prevangle = ");
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Serial.println(prevangle);
+
+
+  
+ if(error >= 0 and error <= 180 )
+ {int angle = (pryamo + angle0);
+ //Serial.print("angle = ");
+ //Serial.println(angle);
+ myservo.write(angle); 
+    delay(rudderspeed);  }
+ else 
+ if(error >= -180 and error < 0)
+ {angle = (pryamo + angle0);
+//Serial.print("angle = ");
+//Serial.println(angle);
+ myservo.write(angle); 
+    delay(rudderspeed);   }
+ else
+   if (error > 180 and error <= 360) 
+   {angle = (pryamo - angle0);
+ //Serial.print("angle = ");
+ //Serial.println(angle);
+ myservo.write(angle); 
+    delay(rudderspeed);   }
+ else
+   if (error >= -360 and error < -180) 
+   {angle = (pryamo - angle0);
+ //Serial.print("angle = ");
+ //Serial.println(angle);
+ myservo.write(angle); 
+    delay(rudderspeed);   }
+    
+}
+
+
+
+
+
+
+
+
+
+
+void transformation(float uncalibrated_values[3])    
+{
+  //calibration_matrix[3][3] is the transformation matrix
+  //replace M11, M12,..,M33 with your transformation matrix data
+  double calibration_matrix[3][3] = 
+  {
+    {1.508733, 0.025383, 0.040484},
+    {0.025383, 1.297187, -0.114888},
+    {0.040484, -0.114888, 1.342674} 
+  };
+  //bias[3] is the bias
+  //replace Bx, By, Bz with your bias data
+  double bias[3] = 
+  {
+    434.885024,
+    178.706281,
+    -143.397373
+  };  
+  //calculation
+  for (int i=0; i<3; ++i) uncalibrated_values[i] = uncalibrated_values[i] - bias[i];
+  float result[3] = {0, 0, 0};
+  for (int i=0; i<3; ++i)
+    for (int j=0; j<3; ++j)
+      result[i] += calibration_matrix[i][j] * uncalibrated_values[j];
+  for (int i=0; i<3; ++i) calibrated_values[i] = result[i];
+}
+
+
+void vector_length_stabilasation(){
+  //calculate the normal vector length
+  if (scaler_flag == false)
+  {
+    getHeading();
+    normal_vector_length = sqrt(calibrated_values[0]*calibrated_values[0] + calibrated_values[1]*calibrated_values[1] + calibrated_values[2]*calibrated_values[2]);
+    scaler_flag = true;
+  } 
+  //calculate the current scaler
+  scaler = normal_vector_length/sqrt(calibrated_values[0]*calibrated_values[0] + calibrated_values[1]*calibrated_values[1] + calibrated_values[2]*calibrated_values[2]);
+  //apply the current scaler to the calibrated coordinates (global array calibrated_values)
+  calibrated_values[0] = calibrated_values[0]*scaler;
+  calibrated_values[1] = calibrated_values[1]*scaler;
+  calibrated_values[2] = calibrated_values[2]*scaler;
+}
+
+void getHeading()
+{ 
+  mag.getHeading(&mx, &my, &mz);
+  //MagnetometerRaw raw = compass.ReadRawAxis();
+  xv = (float)mx;
+  yv = (float)my;
+  zv = (float)mz;
+}
+
+
+
+// ПИД
+// функция расчёта выходного сигнала
+int computePID() {
+//float error = setpoint - input;           // ошибка регулирования
+  ////////////float delta_input = prevInput - input;    // изменение входного сигнала
+  float delta_input = prevInput - intheading; 
+  prevInput = intheading;
+  output = 0;
+  output += (float)error * Kp;                  // пропорционально ошибке регулирования
+  output += (float)delta_input * Kd / _dt_s;    // дифференциальная составляющая
+  integral += (float)error * Ki * _dt_s;        // расчёт интегральной составляющей
+  // тут можно ограничить интегральную составляющую!
+  output += integral;                           // прибавляем интегральную составляющую
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////output = constrain(output, pidMin, pidMax);   // ограничиваем выход
+  return output; }
+
+
+float Snos () {
+     if (lastTargetlat != fin_lat or lastTargetlon != fin_lon) {
+        lastTargetlat = fin_lat;
+        lastTargetlon = fin_lon;
+        lastCourse = bearingx;
+        }
+        deviation1 = (bearingx - lastCourse);
+    
+  //  if deviation1 > math.pi
+  // deviation1 = -(2 * math.pi - deviation1) 
+  //  if deviation1 < -math.pi
+  //  deviation1 = 2 * math.pi + deviation1
+
+
+    delta_input1 = (prevInput1 - lastCourse);
+    prevInput1 = lastCourse;
+    output1 = 0;
+    output1 += deviation1 * Kp1;
+    output1 += delta_input1 * Kd1 / _dt_s;
+    integral1 += deviation1 * Ki1 * _dt_s;
+    output1 += integral1;
+    return output1;
+
+}
